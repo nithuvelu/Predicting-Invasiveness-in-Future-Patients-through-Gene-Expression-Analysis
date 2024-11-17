@@ -1,0 +1,524 @@
+## This R code is for Team E from Group 5##
+
+# Clear previous history of images and variables
+if(!is.null(dev.list())) dev.off()
+rm(list = ls())
+
+# Libraries needed for our analysis
+library(MASS)
+library(stats)
+library(ggplot2)
+library(caret)
+library(glmnet)
+library(Metrics)
+library(randomForest)
+library(kernlab)
+library(gbm)
+library(rpart)
+library(cluster)
+library(e1071)
+library(dplyr)
+library(knitr)
+library(ggfortify)
+library(factoextra)
+library(ggdist)
+library(class)
+library(kableExtra)
+
+# Setting up the working directory
+#setwd("C:/Users/cc/OneDrive - University of Essex/MA321/Group")#Kago
+setwd("C:/Users/Avinash Reddy/Videos/Applied - GRP-Assgn")#prasanna
+
+# Read data from the CSV file
+Given_Data <- read.csv(file="gene-expression-invasive-vs-noninvasive-cancer.csv")
+
+#setting Random seed
+set.seed(2314558)
+G5TE_Data_subset <- rank(runif(1:4948))[1:2000]
+
+# Fetching data of the 2000 columns
+G5TE_Data_Analyze <- Given_Data[, G5TE_Data_subset]
+
+#### Preliminary Analysis ####
+
+# analyze the structure and dimensions of the given data
+str(G5TE_Data_Analyze)
+dim(G5TE_Data_Analyze)
+
+# checking for missing values
+sum(is.na(G5TE_Data_Analyze))
+
+# handling missing values by replacing them with mean of the respective column
+
+# Looping through each column in the Given data
+for(i in 1:ncol(G5TE_Data_Analyze)) {
+  # Checking if the column is numeric
+  if(is.numeric(G5TE_Data_Analyze[[i]])) {
+    # Calculating mean of the column without NA values
+    column_mean <- mean(G5TE_Data_Analyze[[i]], na.rm = TRUE)
+    # Replacing NA values with the column mean
+    G5TE_Data_Analyze[[i]][is.na(G5TE_Data_Analyze[[i]])] <- column_mean
+  }
+}
+
+# check the range of gene expression values
+
+# Get the range for all gene expreesion values
+gene_expression_range <- range(unlist(G5TE_Data_Analyze))
+print(gene_expression_range)
+
+# Data Normalization
+G5TE_Data_Normalized <- scale(G5TE_Data_Analyze)
+
+#Plotting Mean and SD
+
+# Initialize vectors to store the mean and SD for each gene
+Mean_G5TE = numeric(ncol(G5TE_Data_Analyze))
+SD_G5TE = numeric(ncol(G5TE_Data_Analyze))
+
+# Loop through each gene to calculate mean and SD
+for (i in 1:ncol(G5TE_Data_Analyze)) {
+  Mean_G5TE[i] = mean(G5TE_Data_Analyze[,i ])
+  SD_G5TE[i] = sd(G5TE_Data_Analyze[,i])
+}
+
+# Combine into a data frame
+DF_Mean_SD <- data.frame(GeneID = colnames(G5TE_Data_Analyze),
+                           Mean = Mean_G5TE, SD = SD_G5TE)
+# View the first 10 rows
+head(DF_Mean_SD, 10)
+
+# Boxplot for Mean and SD of the gene expression data
+DF_stats = data.frame(Value = c(Mean_G5TE, SD_G5TE),
+                        Statistic = factor(rep(c("Mean", "SD"), 
+                        each = ncol(G5TE_Data_Analyze))))
+
+ggplot(DF_stats, aes(x = Statistic, y = Value, fill = Statistic)) +
+  geom_boxplot() +
+  labs(title = "Box plot of Mean & SD of Gene Data",
+       x = "Statistic",
+       y = "Value") +
+  theme_minimal()
+
+#Maintaining separate data frame for data with column Class
+G5TE_DataWithClass <- G5TE_Data_Analyze
+G5TE_DataWithClass$Class <- as.factor(Given_Data$Class)
+
+# Investigate the class column
+table(G5TE_DataWithClass$Class)
+
+############### Code for Task 1 ###################
+## unsupervised Dimension reduction using PCA ##
+
+# using prcomp() to get principal component
+G5TE_PCA_Result <- prcomp(G5TE_Data_Normalized ,scale. = TRUE,center = TRUE)
+summary(G5TE_PCA_Result)
+
+# Scatter plot of first 5 PC components
+cols <- ifelse(G5TE_DataWithClass[,2001]=="1", 'blue', 'red')
+# Save current par settings to reset later
+old_Par <- par(no.readonly = TRUE) 
+# Increase the upper margin to make space for the title
+par(mar=c(5.1, 4.1, 4.1, 2.1)) 
+# Create pairs plot
+pairs(G5TE_PCA_Result$x[,1:5], pch=19, cex=.5, col=cols)
+# Add main title using mtext
+mtext("Scatterplot Matrix of the First Five Principal Components", side=3, line=3, cex=1)
+# Reset to old par settings
+par(old_Par)
+
+# Calculating proportion of variance
+G5TE_PropVar <- G5TE_PCA_Result$sdev^2 / sum(G5TE_PCA_Result$sdev^2)
+# Calculating cumulative variance explained
+G5TE_CumVar <- cumsum(G5TE_PropVar)
+
+# Creating a summary data frame for PC data
+G5TE_PCA_Summary <- data.frame(
+  G5TE_PCASum_SD = G5TE_PCA_Result$sdev,
+  G5TE_PCASum_PV = G5TE_PropVar,
+  G5TE_PCASum_CV = G5TE_CumVar)
+
+# Bar plot for the proportion of variance explained by each PC
+par(mfrow = c(1, 2))
+barplot(G5TE_PCA_Summary$G5TE_PCASum_PV, names.arg = G5TE_PCA_Summary$PC,
+        xlab = "Principal Component", ylab = "Proportion of Variance Explained",
+        main = "Proportion of Variance Explained by Each PC")
+
+# Selecting only the first 10 components for display as table
+G5TE_PCA_top10 <- head(G5TE_PCA_Summary, 10)
+kable(G5TE_PCA_top10, format = "html", digits = 3) %>%
+  kable_styling()
+
+# Finding the number of components needed to explain 95%
+Ncomp <- which(G5TE_CumVar >= 0.95)[1]
+
+# Plotting the cumulative variance explained to visualize
+plot(G5TE_CumVar, xlab = "Principal Component", 
+     ylab = "Cumulative Variance Explained", 
+     type = "b", pch = 19,
+     main = "Cumulative Variance Explained by PCA Components")
+abline(h = 0.95, col = "red", lty = 2)
+abline(v = Ncomp, col = "blue", lty = 2)
+
+cat("Number of principal components to keep:", Ncomp, "\n")
+
+# Fetching dimension reduced data of PCA
+G5TE_PCA_Reduced <- G5TE_PCA_Result$x[, 1:Ncomp]
+
+## supervised Dimension reduction using LDA ##
+
+LDA_Predictors <- G5TE_Data_Analyze
+LDA_Outcome <- Given_Data$Class
+
+# Fit the LDA model
+lda_result <- lda(LDA_Outcome ~ ., data = LDA_Predictors)
+
+#  Fetch the transformed data from LDA
+lda_reduced_data <- predict(lda_result, LDA_Predictors)$x
+
+# Convert the data into data frame
+lda_reduced_data <- as.data.frame(lda_reduced_data)
+lda_reduced_data$Class <- as.factor(Given_Data$Class)
+
+# Box Plot for LDA reduced data
+lda_boxplot <- ggplot(lda_reduced_data, aes(x = Class, y = LD1, fill = Class)) +
+  geom_boxplot() +
+  labs(title = "LDA: Boxplot of LD1 by Class", x = "Class", y = "LD1") +
+  theme_minimal()
+print(lda_boxplot)
+
+############### Code for Task 2 ###############
+## unsupervised learning models/clustering ##
+
+## Principal Component Analysis ##
+
+#extract the scores of the first 60 principal components 
+G5TE_PCA_Result$x <- G5TE_PCA_Result$x[, 1:60]
+#performing standard deviation for 60 pcs
+G5TE_PCA_Result$sdev <- G5TE_PCA_Result$sdev[1:60]
+#loading the information of 60 components, it will have only information of 60 pcs
+G5TE_PCA_Result$rotation <- G5TE_PCA_Result$rotation[, 1:60]
+
+#create dataframe for 60 pcs
+G5TE_Data_Reduced <- data.frame(G5TE_PCA_Reduced)
+#add Class names to dataframe
+G5TE_Data_Reduced$Class <- rownames(G5TE_Data_Analyze)
+
+# plot PC1 Vs. PC2
+ggplot(G5TE_Data_Reduced, aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = Class), size = 3) +  
+  xlab("PC1") + ylab("PC2") +
+  ggtitle("PCA Plot (PC1 vs PC2)")
+
+# Get the data loadings for the first 60 principal components
+load_components<- G5TE_PCA_Result$rotation[, 1:60]
+
+# Initialize a list to store the top genes/values for each component
+top_feature_value <- vector("list", length = ncol(load_components))
+
+# Loop through each principal component
+for (i in seq_along(top_feature_value)) {
+  # Get the gene scores for the current component
+  feature_score <- abs(load_components[, i])
+  
+  # Get the top 10 genes/values for the current component
+  feature_rank <- sort(feature_score, decreasing = TRUE)
+  high_feature <- names(feature_rank[1:10])
+  
+  # Store the top genes/values in the list
+  top_feature_value[[i]] <- high_feature
+}
+
+# Print the top genes/values for each component
+for (i in seq_along(top_feature_value)) {
+  cat("Top 10 genes for Principal Component", i, ":", paste(top_feature_value[[i]], collapse = ", "), "\n")
+}
+
+# Extract the top 5 genes/values for the first 5 principal components
+high_feature_matrix <- sapply(top_feature_value[1:5], function(x) x[1:5])
+
+# perform table creation
+high_feature_df <- data.frame(t(high_feature_matrix))
+
+# Add row and column names
+row.names(high_feature_df) <- paste("PC", 1:5)
+colnames(high_feature_df) <- 1:5
+
+# Display the table
+kable(high_feature_df, caption = "Top 5 genes/values for each of the first 5 principal components")
+
+
+
+## K-means Clustering ##
+
+#Plotting wss method to find the desired number of clusters
+fviz_nbclust(G5TE_PCA_Result$x , kmeans, method = "wss")
+
+#choosing desired clusters
+desired_clusters <- 3 
+#perform K-means for 60 pcs
+kmeans_perform <- kmeans(G5TE_PCA_Result$x , centers = desired_clusters)
+
+# Get cluster labels
+cluster_title <- kmeans_perform$cluster
+
+# Create a data frame with PC1, PC2, and cluster title
+kcluster_df <- data.frame(
+  PC1 = G5TE_PCA_Result$x[, 1],
+  PC2 = G5TE_PCA_Result$x[, 2],
+  Cluster = as.factor(cluster_title)
+)
+
+# Ellipse plot for Visualization of K-means Clustering
+kmeans_plot <- ggplot(kcluster_df, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(size = 3) +
+  stat_ellipse(aes(group = Cluster), geom = "polygon", fill = NA, alpha = 0.5) +
+  xlab("Principal Component 1") + ylab("Principal Component 2") +
+  ggtitle("Visualization of K-means Clustering") +
+  theme_bw()
+
+# Display the plot
+print(kmeans_plot)
+
+## Hierachical ##
+
+# Hierarchical clustering with different linkage methods
+Hierarchical_average <- hclust(dist(G5TE_PCA_Result$x), method = "average")
+
+#create different colours for each linkage methods
+average_color <- "purple"
+
+# plot dendrogram plot
+plot_dendrogram <- function(dendrogram, color, main_title) {
+  plot(dendrogram, hang = -1, cex = 0.8, main = main_title, col = color)
+}
+
+# Average Linkage Dendrogram plot
+par(mfrow = c(1, 1))
+plot_dendrogram(Hierarchical_average, average_color, "Hierarchical Average Linkage Plot")
+
+
+#############Code for task 3 ###############
+## supervised learning models/classification ##
+
+G5TE_Data_Reduced$Class <- Given_Data$Class
+G5TE_Data_Reduced$Class <- as.factor(G5TE_Data_Reduced$Class)
+
+#seeding again to maintain consistency
+set.seed(2314558)
+
+#Splitting reduced Data into 80 percent training data and 20 percent test data
+Reduced_Split_Index <- createDataPartition(G5TE_Data_Reduced$Class, p = 0.8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+G5TE_Training <- G5TE_Data_Reduced[ Reduced_Split_Index,]
+G5TE_Testing  <- G5TE_Data_Reduced[-Reduced_Split_Index,]
+G5TE_Training$Class <- as.factor(G5TE_Training$Class)
+
+
+# cross validation with 10 folds
+Tr_ctrl_Com <- trainControl(method="cv", number=10)
+
+# tune grid with hyper parameters for log model
+log_TG <- expand.grid(
+  alpha = seq(0, 1, by = 0.1),
+  lambda = seq(0.0001, 1, by = 0.01) 
+)
+
+# training Logistic regression model 
+set.seed(2314558)
+G5TE_Train_Log <- train(Class ~ ., data = G5TE_Training, 
+                   method = "glmnet", 
+                   family = "binomial", 
+                   trControl = Tr_ctrl_Com,
+                   tuneGrid = log_TG)
+
+# Summary of the trained log model
+summary(G5TE_Train_Log)
+
+# training LDA model 
+set.seed(2314558)
+G5TE_Train_LDA <- train(Class ~ ., data = G5TE_Training, 
+                   method = "lda",
+                   preProcess = c("center", "scale"),
+                   trControl = Tr_ctrl_Com
+)
+
+# Summary of the trained log model
+summary(G5TE_Train_LDA)
+
+# Reducing the data furthermore to train QDA model
+G5TE_PC_QDA <- G5TE_PCA_Result$x[, 1:26]
+G5TE_PC_QDA_DF <- data.frame(G5TE_PC_QDA)
+G5TE_PC_QDA_DF$Class <- Given_Data$Class
+G5TE_PC_QDA_DF$Class <- as.factor(G5TE_PC_QDA_DF$Class)
+
+#seeding again to maintain consistency
+set.seed(2314558)
+
+# Create 10 equally sized folds
+G5TE_QDA_Fold <- createFolds(G5TE_PC_QDA_DF$Class, k = 10, list = TRUE)
+
+# Initialize a vector to store accuracy for each fold
+accuracy_QDA <- numeric(length(G5TE_QDA_Fold))
+
+# Loop through the folds
+for(i in seq_along(G5TE_QDA_Fold)) {
+  # Split the data into training and test sets
+  G5TE_Training_QDA <- G5TE_PC_QDA_DF[-G5TE_QDA_Fold[[i]], ]
+  G5TE_Testing_QDA <- G5TE_PC_QDA_DF[G5TE_QDA_Fold[[i]], ]
+  
+  G5TE_Train_QDA <- qda(Class ~ ., data = G5TE_Training_QDA)
+  G5TE_Pred_QDA <- predict(G5TE_Train_QDA, G5TE_Testing_QDA)
+  
+  set.seed(2314558)
+  # Fit the QDA model to the training data
+  G5TE_Train_QDA <- qda(Class ~ ., data = G5TE_Training_QDA)
+  
+  # Make predictions on the test set
+  G5TE_Pred_QDA <- predict(G5TE_Train_QDA, G5TE_Testing_QDA)
+  
+  G5TE_ConfMat_QDA <- table(Predicted = G5TE_Pred_QDA$class, Actual = G5TE_Testing_QDA$Class)
+  accuracy_QDA[i] <- sum(diag(G5TE_ConfMat_QDA)) / sum(G5TE_ConfMat_QDA)
+}
+
+# Calculate mean and median accuracy
+mean_acc_QDA <- mean(accuracy_QDA)
+median_acc_QDA <- median(accuracy_QDA)
+
+# Summarize the QDA model
+summary(G5TE_Train_QDA)
+
+# Train k-NN Model
+knn_TG <- expand.grid(k = seq(3, 20, by = 2))
+set.seed(2314558)
+G5TE_Train_KNN <- train(Class ~ ., data = G5TE_Training, 
+                   method = "knn", 
+                   trControl = Tr_ctrl_Com,
+                   tuneGrid = knn_TG
+)
+
+# Summarize the K-NN model
+summary(G5TE_Train_KNN)
+
+
+# Train random forest Model
+Mtry_Ranfor <- c(2, sqrt(ncol(G5TE_Training)-1), (ncol(G5TE_Training)-1)/2, ncol(G5TE_Training)-1)
+Ranfor_TG <- custom_tune_grid <- expand.grid(mtry = Mtry_Ranfor)
+
+set.seed(2314558)
+G5TE_Train_RanFor <- train(Class ~ ., data = G5TE_Training, 
+                  method = "rf",
+                  trControl = Tr_ctrl_Com, 
+                  tuneGrid = Ranfor_TG)
+# Summarize Random Forest  model
+summary(G5TE_Train_RanFor)
+
+# Train SVM Model
+TG_SVM <- expand.grid(
+  C = c(0.1, 1, 10),  
+  sigma = c(0.01, 0.1, 1)
+)
+
+set.seed(2314558)
+G5TE_Train_SVM <- train(Class ~ ., data = G5TE_Training, 
+                   method = "svmRadial", 
+                   trControl = Tr_ctrl_Com, 
+                   tuneGrid = TG_SVM) 
+
+# Summarize the SVM Model
+summary(G5TE_Train_SVM)
+
+# Train GBM Model
+TG_GBM <- expand.grid(
+  n.trees = c(50, 100, 150),        
+  interaction.depth = c(1, 3, 5, 7),    
+  shrinkage = c(0.01, 0.1, 0.2),
+  n.minobsinnode = c(5, 10, 20)
+)
+
+set.seed(2314558)
+G5TE_Train_GBM <- train(
+  Class ~ ., 
+  data = G5TE_Training, 
+  method = "gbm",
+  trControl = Tr_ctrl_Com,
+  tuneGrid = TG_GBM
+)
+
+# Summarize the GBM Model
+summary(G5TE_Train_GBM)
+
+# Train Naive Bayes Model
+TG_NB <- expand.grid(
+  laplace = c(0, 0.5, 1),
+  usekernel = c(TRUE, FALSE),
+  adjust = c(1, 2)
+)
+
+set.seed(2314558)
+G5TE_Train_Nai_Ba <- train(Class ~ ., data = G5TE_Training, 
+                  method = "naive_bayes", 
+                  trControl = Tr_ctrl_Com,
+                  tuneGrid = TG_NB)
+
+# Summarize the NB Model
+summary(G5TE_Train_Nai_Ba)
+
+#Combine models for comparison
+G5TE_Comp_Models <- list(
+  Model_Log = G5TE_Train_Log,
+  Model_LDA = G5TE_Train_LDA,
+  Model_KNN = G5TE_Train_KNN,
+  Model_RF = G5TE_Train_RanFor,
+  Model_SVM = G5TE_Train_SVM,
+  Model_GBM = G5TE_Train_GBM,
+  Model_NB = G5TE_Train_Nai_Ba
+)
+
+# Comparing Using resampling
+G5TE_resam_res <- resamples(G5TE_Comp_Models)
+
+# Summarize the results on accuracy Metric
+G5TE_Acc_res <- summary(G5TE_resam_res, metric = "Accuracy")
+print(G5TE_Acc_res)
+
+# Summarize the results on accuracy Metric
+G5TE_kap_res <- summary(G5TE_resam_res, metric = "Kappa")
+print(G5TE_kap_res)
+
+#Plot the accuracy of trained models from re-sampling results
+bwplot(G5TE_resam_res)
+
+########## Code For Task 4 ################
+
+# Add the cluster labels to your original data set as a new feature
+G5TE_Data_Reduced$Cluster <- kmeans_perform$cluster
+G5TE_Data_Reduced$Cluster <- as.factor(G5TE_Data_Reduced$Cluster)
+
+# setting Training and Testing Data for Best Model
+set.seed(2314558)
+trainIndex_best <- createDataPartition(G5TE_Data_Reduced$Class, p = 0.8, 
+                                       list = FALSE, 
+                                       times = 1)
+G5TE_Training_best <- G5TE_Data_Reduced[ trainIndex_best,]
+G5TE_Testing_best  <- G5TE_Data_Reduced[-trainIndex_best,]
+
+#Fetching Best value for K from KNN Model
+KNN_K <- G5TE_Train_KNN$bestTune$k
+KNN_K
+
+set.seed(2314558)
+
+# Train the k-NN model using the best k
+G5TE_KNN_Best <- knn(train = G5TE_Training_best[, -which(names(G5TE_Training_best) %in% c("Class"))], 
+                              test = G5TE_Testing_best[, -which(names(G5TE_Testing_best) %in% c("Class"))], 
+                              cl = G5TE_Training_best$Class, k = KNN_K)
+
+# Compute the accuracy of improved model
+G5TE_Best_ConfMat <- confusionMatrix(G5TE_KNN_Best, G5TE_Testing_best$Class)
+G5TE_Best_Acc <- G5TE_Best_ConfMat$overall['Accuracy']
+
+print(paste("The Improved best Model's accuracy with clusters data:", G5TE_Best_Acc))
+
